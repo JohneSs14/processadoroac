@@ -1,3 +1,10 @@
+`timescale 1ns / 1ps
+//=============
+//|           |
+//|           |
+//|           |
+//|           |
+//=============
 // riscvsingle.sv
 
 // RISC-V single-cycle processor
@@ -99,11 +106,15 @@ module testbench();
   always
     begin
       clk <= 1; # 5; clk <= 0; # 5;
+     
     end
 
   // check results
   always @(negedge clk)
     begin
+       $display("Time: %5d, PC: %4h, Instr: %8h, MemWrite: %4b, DataAdr: %4h, WriteData: %4h, Rs2: %8h, PCSrc: %1b, PCTarget_MEM: %8h, PCTarget: %8h, Branch_MEM: %1b, Jump_MEM: %1b, Zero_MEM: %1b, SrcA_final: %8h, SrcB: %8h, AluResult_MEM: %8h, UlaA: %2b, UlaB: %2b, ALUResult: %8h, ALUSrc_EX: %1b, ImmExt_EX: %8h, ImmExt: %8h, SrcB_final: %8h, Instr_ID: %8h, MainDecOp: %7b, ALUControl: %3b, Branch: %1b, Jump: %1b, PCNext: %32b, Zero: %1b, Rd_WB: %8h, Result: %8h, RegWrite_WB: %1b, wd3: %8h \n\n",
+               $time, dut.rvsingle.PC, dut.rvsingle.Instr, MemWrite, DataAdr, dut.rvsingle.dp.WriteData, dut.rvsingle.dp.Instr_ID[24:20], dut.rvsingle.PCSrc, dut.rvsingle.dp.PCTarget_MEM, dut.rvsingle.dp.PCTarget, dut.rvsingle.dp.Branch_MEM, dut.rvsingle.dp.Jump_MEM, dut.rvsingle.dp.Zero_MEM, dut.rvsingle.dp.SrcA_final, dut.rvsingle.dp.SrcB, dut.rvsingle.dp.ALUResult_MEM, dut.rvsingle.dp.UlaA, dut.rvsingle.dp.UlaB, dut.rvsingle.dp.ALUResult, dut.rvsingle.dp.ALUSrc_EX, dut.rvsingle.dp.ImmExt_EX, dut.rvsingle.dp.ImmExt, dut.rvsingle.dp.SrcB_final, dut.rvsingle.dp.Instr_ID, 
+               dut.rvsingle.c.md.op, dut.rvsingle.dp.ALUControl, dut.rvsingle.dp.Branch, dut.rvsingle.dp.Jump, dut.rvsingle.dp.PCNext, dut.rvsingle.dp.Zero, dut.rvsingle.dp.Rd_WB, dut.rvsingle.dp.Result, dut.rvsingle.dp.RegWrite_WB, dut.rvsingle.dp.rf.wd3);
       if(MemWrite) begin
         if(DataAdr === 100 & WriteData === 25) begin
           $display("Simulation succeeded");
@@ -132,44 +143,51 @@ endmodule
 module riscvsingle(input  logic        clk, reset,
                    output logic [31:0] PC,
                    input  logic [31:0] Instr,
-                   output logic        MemWrite,
+                   output logic        MemWrite_MEM,
                    output logic [31:0] ALUResult, WriteData,
                    input  logic [31:0] ReadData);
 
-  logic       ALUSrc, RegWrite, Jump, Zero;
+  logic       ALUSrc, RegWrite, Jump, Zero, Branch, MemWrite;
   logic [1:0] ResultSrc, ImmSrc;
   logic [2:0] ALUControl;
 
-  controller c(Instr[6:0], Instr[14:12], Instr[30], Zero,
+  logic [31:0] Instr_ID;
+
+  controller c(Instr_ID[6:0], Instr_ID[14:12], Instr_ID[30], Zero,
                ResultSrc, MemWrite, PCSrc,
                ALUSrc, RegWrite, Jump,
-               ImmSrc, ALUControl);
+               ImmSrc, ALUControl, Branch, Branch_MEM, Jump_MEM);
   datapath dp(clk, reset, ResultSrc, PCSrc,
               ALUSrc, RegWrite,
               ImmSrc, ALUControl,
-              Zero, PC, Instr,
-              ALUResult, WriteData, ReadData);
+              Zero, PC, Instr, Instr_ID,
+              ALUResult, WriteData, ReadData, Branch, Jump, MemWrite, Branch_MEM, Jump_MEM, MemWrite_MEM);
 endmodule
 
 module controller(input  logic [6:0] op,
                   input  logic [2:0] funct3,
                   input  logic       funct7b5,
-                  input  logic       Zero,
+                  input  logic       Zero_MEM,
                   output logic [1:0] ResultSrc,
                   output logic       MemWrite,
                   output logic       PCSrc, ALUSrc,
                   output logic       RegWrite, Jump,
                   output logic [1:0] ImmSrc,
-                  output logic [2:0] ALUControl);
+                  output logic [2:0] ALUControl,
+                  
+                  output logic       Branch,
+
+                  input logic        Branch_MEM,
+                  input logic        Jump_MEM
+                  );
 
   logic [1:0] ALUOp;
-  logic       Branch;
 
   maindec md(op, ResultSrc, MemWrite, Branch,
              ALUSrc, RegWrite, Jump, ImmSrc, ALUOp);
   aludec  ad(op[5], funct3, funct7b5, ALUOp, ALUControl);
 
-  assign PCSrc = Branch & Zero | Jump;
+  assign PCSrc = Branch_MEM & Zero_MEM | Jump_MEM;
 endmodule
 
 module maindec(input  logic [6:0] op,
@@ -194,7 +212,7 @@ module maindec(input  logic [6:0] op,
       7'b1100011: controls = 11'b0_10_0_0_00_1_01_0; // beq
       7'b0010011: controls = 11'b1_00_1_0_00_0_10_0; // I-type ALU
       7'b1101111: controls = 11'b1_11_0_0_10_0_00_1; // jal
-      default:    controls = 11'bx_xx_x_x_xx_x_xx_x; // non-implemented instruction
+      default:    controls = 11'bx_xx_x_x_xx_0_xx_0; // non-implemented instruction
     endcase
 endmodule
 
@@ -225,37 +243,134 @@ module aludec(input  logic       opb5,
 endmodule
 
 module datapath(input  logic        clk, reset,
-                input  logic [1:0]  ResultSrc, 
+                input  logic [1:0]  ResultSrc,  // MemToReg
                 input  logic        PCSrc, ALUSrc,
                 input  logic        RegWrite,
                 input  logic [1:0]  ImmSrc,
                 input  logic [2:0]  ALUControl,
-                output logic        Zero,
+                output logic        Zero_MEM,
                 output logic [31:0] PC,
                 input  logic [31:0] Instr,
-                output logic [31:0] ALUResult, WriteData,
-                input  logic [31:0] ReadData);
+                output logic [31:0] Instr_ID,
+                output logic [31:0] ALUResult_MEM, WriteData_MEM,
+                input  logic [31:0] ReadData,
+                
+                input logic         Branch,
+                input logic         Jump,
+                input logic         MemWrite,           
 
-  logic [31:0] PCNext, PCPlus4, PCTarget;
-  logic [31:0] ImmExt;
-  logic [31:0] SrcA, SrcB;
-  logic [31:0] Result;
+                output logic        Branch_MEM,
+                output logic        Jump_MEM,
+                output logic        MemWrite_MEM
+
+                );
+
+  logic [31:0] PCNext, PCPlus4, PCTarget, PCTarget_MEM;
+  logic [31:0] PC_ID, PCPlus4_ID, PC_EX, PCPlus4_EX, PCPlus4_MEM, PCPlus4_WB;
+  logic [31:0] ImmExt, ImmExt_EX;
+  logic [31:0] SrcA, SrcB, WriteData, ReadData1_EX, WriteData_EX;
+  logic [31:0] SrcA_final, SrcB_final;
+  logic [1:0] UlaA, UlaB;
+  logic [31:0] Result, ReadData_WB;
+  logic [31:0] ALUResult_WB, ALUResult;
+
+  logic [2:0]  ALUControl_EX;
+  logic [1:0]  ResultSrc_EX, ResultSrc_MEM, ResultSrc_WB;
+
+  logic [4:0]  Rd_EX, Rs1_EX, Rs2_EX;
+  logic [4:0]  Rd_MEM, Rd_WB;
+
+  logic Zero, ALUSrc_EX, MemWrite_EX, MemRead_EX, Branch_EX, RegWrite_EX, Jump_EX;
+  logic MemRead_MEM, RegWrite_MEM, RegWrite_WB;
 
   // next PC logic
-  flopr #(32) pcreg(clk, reset, PCNext, PC); 
+  flopr #(32) pcreg(clk, reset, enable_pc, PCNext, PC); 
   adder       pcadd4(PC, 32'd4, PCPlus4);
-  adder       pcaddbranch(PC, ImmExt, PCTarget);
-  mux2 #(32)  pcmux(PCPlus4, PCTarget, PCSrc, PCNext);
+  adder       pcaddbranch(PC_EX, ImmExt_EX, PCTarget);
+  mux2 #(32)  pcmux(PCPlus4, PCTarget_MEM, PCSrc, PCNext);
  
   // register file logic
-  regfile     rf(clk, RegWrite, Instr[19:15], Instr[24:20], 
-                 Instr[11:7], Result, SrcA, WriteData);
-  extend      ext(Instr[31:7], ImmSrc, ImmExt);
+  regfile     rf(clk, RegWrite_WB, Instr_ID[19:15], Instr_ID[24:20], 
+                 Rd_WB, Result, SrcA, WriteData);
+  extend      ext(Instr_ID[31:7], ImmSrc, ImmExt);
+
+  forwardingunit forwardingunit(
+      .Rs1_IDEX(Rs1_EX),
+      .Rs2_IDEX(Rs2_EX),
+      .Rd_EXMEM(Rd_MEM),
+      .Rd_MEMWB(Rd_WB),
+      .RegWrite_EXMEM(RegWrite_MEM),
+      .RegWrite_MEMWB(RegWrite_WB),
+      .UlaA(UlaA),
+      .UlaB(UlaB)
+  );
+
+  hazarddetectionunit hazardunit(
+      .MemRead_IDEX(MemRead_EX),
+      .PCSrc(PCSrc),
+      .Rd_IDEX(Rd_EX),
+      .Rs1_IFID(Instr_ID[19:15]),
+      .Rs2_IFID(Instr_ID[24:20]),
+      .PCWrite(enable_pc),
+      .IFIDWrite(enable_ifid),
+      .IFIDFlush(flush_id),
+      .IDEXFlush(flush_exec)
+  );
 
   // ALU logic
-  mux2 #(32)  srcbmux(WriteData, ImmExt, ALUSrc, SrcB);
-  alu         alu(SrcA, SrcB, ALUControl, ALUResult, Zero);
-  mux3 #(32)  resultmux(ALUResult, ReadData, PCPlus4, ResultSrc, Result);
+  mux3 #(32)  srcaforwardingmux(ReadData1_EX, Result, ALUResult_MEM, UlaA, SrcA_final);
+  mux3 #(32)  srcbforwardingmux(WriteData_EX, Result, ALUResult_MEM, UlaB, SrcB_final);
+  
+  mux2 #(32)  srcbmux(SrcB_final, ImmExt_EX, ALUSrc_EX, SrcB);
+  alu         alu(SrcA_final, SrcB, ALUControl_EX, ALUResult, Zero);
+  mux3 #(32)  resultmux(ALUResult_WB, ReadData_WB, PCPlus4_WB, ResultSrc_WB, Result);
+
+  // pipeline registers
+  IFID        ifid(clk, reset, enable_ifid, flush_id, PC, Instr, PCPlus4, PC_ID, Instr_ID, PCPlus4_ID);
+  
+  IDEX        idex(clk, reset, flush_exec,
+                        PC_ID, SrcA, WriteData, ImmExt, PCPlus4_ID,          
+                        Instr_ID[11:7], Instr_ID[19:15], Instr_ID[24:20],
+                        
+                        ALUControl,
+                        ResultSrc, 
+                        ALUSrc, MemWrite, ResultSrc == 2'b01, Branch, RegWrite, Jump,
+
+                        ALUControl_EX,
+                        ResultSrc_EX,
+                        ALUSrc_EX, MemWrite_EX, MemRead_EX, Branch_EX, RegWrite_EX, Jump_EX,
+
+                        PC_EX, ReadData1_EX, WriteData_EX, ImmExt_EX, PCPlus4_EX,
+                        Rd_EX, Rs1_EX, Rs2_EX);
+
+  EXMEM       exmem(clk, reset,
+                        Zero,
+                        ALUResult, SrcB_final, PCTarget, PCPlus4_EX,
+                        Rd_EX,
+
+                        ResultSrc_EX,
+                        MemWrite_EX, MemRead_EX, Branch_EX, RegWrite_EX, Jump_EX,
+
+                        ResultSrc_MEM,
+                        MemWrite_MEM, MemRead_MEM, Branch_MEM, RegWrite_MEM, Jump_MEM,
+
+                        Zero_MEM,
+                        ALUResult_MEM, WriteData_MEM, PCTarget_MEM, PCPlus4_MEM,
+                        Rd_MEM);
+                        
+  MEMWB       memwb(clk, reset,
+                        ReadData, ALUResult_MEM, PCPlus4_MEM,
+                        Rd_MEM,
+
+                        ResultSrc_MEM, 
+                        RegWrite_MEM,
+
+                        ResultSrc_WB,
+                        RegWrite_WB,
+
+                        ReadData_WB, ALUResult_WB, PCPlus4_WB,
+                        Rd_WB);
+
 endmodule
 
 module regfile(input  logic        clk, 
@@ -271,11 +386,13 @@ module regfile(input  logic        clk,
   // write third port on rising edge of clock (A3/WD3/WE3)
   // register 0 hardwired to 0
 
-  always_ff @(posedge clk)
+  always_ff @(posedge clk or negedge clk)
     if (we3) rf[a3] <= wd3;	
 
   assign rd1 = (a1 != 0) ? rf[a1] : 0;
   assign rd2 = (a2 != 0) ? rf[a2] : 0;
+  
+
 endmodule
 
 module adder(input  [31:0] a, b,
@@ -303,13 +420,14 @@ module extend(input  logic [31:7] instr,
 endmodule
 
 module flopr #(parameter WIDTH = 8)
-              (input  logic             clk, reset,
+              (input  logic             clk, reset, enable,
                input  logic [WIDTH-1:0] d, 
                output logic [WIDTH-1:0] q);
 
   always_ff @(posedge clk, posedge reset)
     if (reset) q <= 0;
-    else       q <= d;
+    else if (enable) q <= d;
+    else q <= q;
 endmodule
 
 module mux2 #(parameter WIDTH = 8)
@@ -381,4 +499,218 @@ module alu(input  logic [31:0] a, b,
   assign zero = (result == 32'b0);
   assign v = ~(alucontrol[0] ^ a[31] ^ b[31]) & (a[31] ^ sum[31]) & isAddSub;
   
+endmodule
+
+module IFID (input logic clk, reset, enable, flush,
+            input logic [31:0] PC_in, Instr_in, PCPlus4_in,
+            // + coisas da hazard unit
+            output logic [31:0] PC_out, Instr_out, PCPlus4_out);
+
+
+  always_ff @(posedge clk, posedge reset, posedge flush)
+    if (reset | flush) begin
+      PC_out    <= 32'b0;
+      PCPlus4_out <= 32'b0;
+      Instr_out <= 32'b0;
+    end else if (enable) begin
+      PC_out    <= PC_in;
+      PCPlus4_out <= PCPlus4_in;
+      Instr_out <= Instr_in;
+    end else begin
+      PC_out    <= PC_out;
+      PCPlus4_out <= PCPlus4_out;
+      Instr_out <= Instr_out;
+    end
+
+endmodule
+
+module IDEX (input logic clk, reset, flush,
+            input logic [31:0] PC_in, ReadData1_in, ReadData2_in, ImmExt_in, PCPlus4_in,  
+            input logic [4:0] Rd_in, Rs1_in, Rs2_in,
+
+            input logic [2:0] ALUControl_in,
+            input logic [1:0] MemToReg_in,
+            input logic ALUSrc_in, MemWrite_in, MemRead_in, Branch_in, RegWrite_in, Jump_in,
+
+            output logic [2:0] ALUControl_out,
+            output logic [1:0] MemToReg_out,
+            output logic ALUSrc_out, MemWrite_out, MemRead_out, Branch_out, RegWrite_out, Jump_out,
+
+            output logic [31:0] PC_out, ReadData1_out, ReadData2_out, ImmExt_out, PCPlus4_out,  
+            output logic [4:0] Rd_out, Rs1_out, Rs2_out
+            
+            );
+
+  always_ff @(posedge clk, posedge reset, posedge flush)
+    if (reset | flush) begin
+      PC_out         <= 32'b0;
+      ReadData1_out  <= 32'b0;
+      ReadData2_out  <= 32'b0;
+      ImmExt_out     <= 32'b0;
+      ALUControl_out <= 3'b0;
+      Rd_out         <= 5'b0;
+      Rs1_out        <= 5'b0;
+      Rs2_out        <= 5'b0;
+      PCPlus4_out   <= 32'b0;
+
+      ALUSrc_out     <= 1'b0;
+      MemWrite_out   <= 1'b0;
+      MemRead_out    <= 1'b0;
+      Branch_out     <= 1'b0;
+      MemToReg_out   <= 2'b00;
+      RegWrite_out   <= 1'b0;  
+      Jump_out       <= 1'b0;   
+    end else begin
+      PC_out         <= PC_in;
+      ReadData1_out  <= ReadData1_in;
+      ReadData2_out  <= ReadData2_in;
+      ImmExt_out     <= ImmExt_in;
+      ALUControl_out <= ALUControl_in;
+      Rd_out         <= Rd_in;
+      Rs1_out        <= Rs1_in;
+      Rs2_out        <= Rs2_in;
+      PCPlus4_out   <= PCPlus4_in;
+
+      ALUSrc_out     <= ALUSrc_in;
+      MemWrite_out   <= MemWrite_in;
+      MemRead_out    <= MemRead_in;
+      Branch_out     <= Branch_in;
+      MemToReg_out   <= MemToReg_in;
+      RegWrite_out   <= RegWrite_in;
+      Jump_out       <= Jump_in;
+    end
+endmodule
+
+module EXMEM (input logic clk, reset,
+              input logic        Zero_in,
+              input logic [31:0] ALUResult_in, WriteData_in, AddPC_in, PCPlus4_in,
+              input logic [4:0]  Rd_in,
+ 
+              input logic [1:0] MemToReg_in,
+              input logic MemWrite_in, MemRead_in, Branch_in, RegWrite_in, Jump_in,
+
+              output logic [1:0] MemToReg_out,
+              output logic MemWrite_out, MemRead_out, Branch_out, RegWrite_out, Jump_out,
+
+              output logic       Zero_out,
+              output logic [31:0] ALUResult_out, WriteData_out, AddPC_out, PCPlus4_out,
+              output logic [4:0]  Rd_out);
+
+  always_ff @(posedge clk, posedge reset)
+    if (reset) begin
+      Zero_out        <= 1'b0;
+      ALUResult_out   <= 32'b0;
+      WriteData_out   <= 32'b0;
+      AddPC_out       <= 32'b0;
+      Rd_out          <= 5'b0;
+      PCPlus4_out     <= 32'b0;
+
+      MemWrite_out    <= 1'b0;
+      MemRead_out     <= 1'b0;
+      Branch_out      <= 1'b0;
+      MemToReg_out    <= 2'b00;
+      RegWrite_out    <= 1'b0;
+      Jump_out        <= 1'b0;
+    end else begin
+      Zero_out        <= Zero_in;
+      ALUResult_out   <= ALUResult_in;
+      WriteData_out   <= WriteData_in;
+      AddPC_out       <= AddPC_in;
+      Rd_out          <= Rd_in;
+      PCPlus4_out     <= PCPlus4_in;
+
+      MemWrite_out    <= MemWrite_in;
+      MemRead_out     <= MemRead_in;
+      Branch_out      <= Branch_in;
+      MemToReg_out    <= MemToReg_in;
+      RegWrite_out    <= RegWrite_in;
+      Jump_out        <= Jump_in; 
+    end
+endmodule
+
+module MEMWB (input logic clk, reset,
+              input logic [31:0] ReadData_in, ALUResult_in, PCPlus4_in,
+              input logic [4:0]  Rd_in,
+
+              input logic [1:0] MemToReg_in,
+              input logic RegWrite_in,
+
+              output logic [1:0] MemToReg_out,
+              output logic RegWrite_out,
+
+              output logic [31:0] ReadData_out, ALUResult_out, PCPlus4_out,
+              output logic [4:0]  Rd_out);
+
+  always_ff @(posedge clk, posedge reset)
+    if (reset) begin
+      ReadData_out    <= 32'b0;
+      ALUResult_out   <= 32'b0;
+      Rd_out          <= 5'b0;
+      PCPlus4_out     <= 32'b0;
+
+      MemToReg_out    <= 2'b00;
+      RegWrite_out    <= 1'b0;
+    end else begin
+      ReadData_out    <= ReadData_in;
+      ALUResult_out   <= ALUResult_in;
+      Rd_out          <= Rd_in;
+      PCPlus4_out     <= PCPlus4_in;
+
+      MemToReg_out    <= MemToReg_in;
+      RegWrite_out    <= RegWrite_in;
+    end
+endmodule
+
+module forwardingunit(
+    input logic [4:0] Rs1_IDEX, Rs2_IDEX,
+    input logic [4:0] Rd_EXMEM, Rd_MEMWB,
+    input logic RegWrite_EXMEM, RegWrite_MEMWB,
+    output logic [1:0] UlaA, UlaB
+);
+
+    always_comb begin
+        UlaA = 2'b00;
+        UlaB = 2'b00;
+
+        if (RegWrite_EXMEM && (Rd_EXMEM != 0) && (Rd_EXMEM == Rs1_IDEX)) begin
+            UlaA = 2'b10;
+        end else if (RegWrite_MEMWB && (Rd_MEMWB != 0) && (Rd_MEMWB == Rs1_IDEX)) begin
+            UlaA = 2'b01;
+        end
+
+        if (RegWrite_EXMEM && (Rd_EXMEM != 0) && (Rd_EXMEM == Rs2_IDEX)) begin
+            UlaB = 2'b10;
+        end else if (RegWrite_MEMWB && (Rd_MEMWB != 0) && (Rd_MEMWB == Rs2_IDEX)) begin
+            UlaB = 2'b01;
+        end
+    end
+endmodule
+
+module hazarddetectionunit(
+    input logic MemRead_IDEX,
+    input logic PCSrc,
+    input logic [4:0] Rd_IDEX,
+    input logic [4:0] Rs1_IFID, Rs2_IFID,
+    output logic PCWrite,
+    output logic IFIDWrite,
+    output logic IFIDFlush,
+    output logic IDEXFlush
+);
+    
+    always_comb begin
+        PCWrite = 1'b1;
+        IFIDWrite = 1'b1;
+        IFIDFlush = 1'b0;
+        IDEXFlush = 1'b0;
+
+        if (MemRead_IDEX && ((Rd_IDEX == Rs1_IFID) || (Rd_IDEX == Rs2_IFID))) begin
+            PCWrite = 1'b0;
+            IFIDWrite = 1'b0;
+        end
+
+        if (PCSrc) begin
+            IFIDFlush = 1'b1;
+            IDEXFlush = 1'b1;
+        end
+    end
 endmodule
